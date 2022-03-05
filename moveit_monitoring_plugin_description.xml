@@ -1,0 +1,5 @@
+<library path="libmoveit_monitoring">
+  <class name="moveit_monitoring/Monitoring" type="Monitoring" base_class_type="move_group::MoveGroupCapability">
+    <description>Monitor the state of MoveIt's planning scene in the diagnostics system</description>
+  </class>
+</library>

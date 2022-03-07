@@ -56,12 +56,13 @@ public:
 	}
 
 	void initialize() override {
-		t = std::thread([this]{ this->monitoringThread(); });
-		diagnostics = root_node_handle_.advertise<diagnostic_msgs::DiagnosticArray>("diagnostics", 1, true);
 		log_msgs = node_handle_.param("monitoring/log_msgs", false);
 		rate = node_handle_.param("monitoring/rate", 0.5);
 		joint_limit_soft_margin = node_handle_.param("monitoring/joint_limit_soft_margin", 0.05);
 		joint_close_to_limit_fraction = node_handle_.param("monitoring/joint_close_to_limit_fraction", 0.05);
+
+		diagnostics = root_node_handle_.advertise<diagnostic_msgs::DiagnosticArray>("diagnostics", 1, true);
+		t = std::thread([this]{ this->monitoringThread(); });
 	};
 
 	void monitoringThread();

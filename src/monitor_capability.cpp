@@ -47,7 +47,7 @@
 class Monitoring : public move_group::MoveGroupCapability {
 public:
 	Monitoring() :
-	   move_group::MoveGroupCapability{ "Monitoring" }
+		move_group::MoveGroupCapability{ "Monitoring" }
 	{}
 
 	~Monitoring() override
@@ -68,8 +68,10 @@ public:
 	void monitoringThread();
 
 private:
-	void fillInSceneStatus(const planning_scene::PlanningScene& scene, diagnostic_msgs::DiagnosticStatus& status);
-	void fillInLimitsStatus(const planning_scene::PlanningScene& scene, diagnostic_msgs::DiagnosticStatus& status);
+	template <typename Inserter>
+	void fillInSceneStatus(const planning_scene::PlanningScene& scene, Inserter msgs);
+	template <typename Inserter>
+	void fillInLimitsStatus(const planning_scene::PlanningScene& scene, Inserter msgs);
 
 	std::thread t;
 
@@ -83,16 +85,7 @@ PLUGINLIB_EXPORT_CLASS(Monitoring, move_group::MoveGroupCapability);
 
 void Monitoring::monitoringThread()
 {
-	diagnostic_msgs::DiagnosticArray da;
-	da.status.resize(2);
-	auto& scene_status{ da.status[0] };
-	scene_status.name = "MoveGroupMonitoring.PlanningSceneCheck";
-	auto& limits_status{ da.status[1] };
-	limits_status.name = "MoveGroupMonitoring.LimitsCheck";
-	auto sendDiagnostics = [&](const ros::Time& time) {
-		da.header.stamp = time;
-		diagnostics.publish(da);
-	};
+	diagnostic_msgs::DiagnosticArray msgs;
 
 	ros::Time now;
 
@@ -103,42 +96,49 @@ void Monitoring::monitoringThread()
 			planning_scene_monitor::LockedPlanningSceneRO locked_scene{ context_->planning_scene_monitor_ };
 			now = ros::Time::now();
 			const auto& scene { *locked_scene->shared_from_this() };
-			fillInSceneStatus(scene, scene_status);
-			fillInLimitsStatus(scene, limits_status);
+			msgs.status.clear();
+			fillInSceneStatus(scene, std::back_inserter(msgs.status));
+			fillInLimitsStatus(scene, std::back_inserter(msgs.status));
 		}
-		sendDiagnostics(now);
+		msgs.header.stamp = now;
+		diagnostics.publish(msgs);
 	}
 }
 
-void Monitoring::fillInSceneStatus(const planning_scene::PlanningScene& scene, diagnostic_msgs::DiagnosticStatus& status)
+template <typename Inserter>
+void Monitoring::fillInSceneStatus(const planning_scene::PlanningScene& scene, Inserter msgs)
 {
+	const size_t number_of_reported_collisions{ 3 };
+	const std::string prefix{ "move_group.SceneCollision" };
+
 	collision_detection::CollisionRequest req;
 	// we need to request contacts to get link pairs to report
 	req.contacts = true;
-	req.max_contacts = 5;
+	req.max_contacts = number_of_reported_collisions;
 	req.max_contacts_per_pair = 1;
 
 	collision_detection::CollisionResult res;
 	scene.checkCollision(req, res);
 
+	size_t entry_id = 0;
+
 	if(res.collision){
-		status.level = status.ERROR;
-		status.message = "in collision (" + std::to_string( res.contact_count ) + " contacts found)";
-		status.values.clear();
-		status.values.reserve(res.contacts.size());
-		size_t id = 0;
 		for(const auto& pair : res.contacts){
-			status.values.emplace_back();
-			status.values.back().key = "contact " + std::to_string(id++);
-			status.values.back().value = pair.first.first + " <> " + pair.first.second;
+			diagnostic_msgs::DiagnosticStatus entry;
+			entry.level = entry.ERROR;
+			entry.name.append(prefix).append(std::to_string(entry_id++));
+			entry.message.append(pair.first.first).append(" <> ").append(pair.first.second);
+			ROS_ERROR_STREAM_COND_NAMED(log_msgs, "monitoring.SceneCollision", "unwanted collision " << entry.message);
+			msgs = std::move(entry);
 		}
-		if(log_msgs)
-			ROS_ERROR_STREAM_NAMED(getName(), status.message);
 	}
-	else {
-		status.level = status.OK;
-		status.message = "no collision";
-		status.values.clear();
+
+	while(entry_id < number_of_reported_collisions){
+		diagnostic_msgs::DiagnosticStatus entry;
+		entry.level = entry.OK;
+		entry.name.append(prefix).append(std::to_string(entry_id++));
+		entry.message = "no collision";
+		msgs = std::move(entry);
 	}
 }
 
@@ -147,24 +147,20 @@ inline T max(T x, Q y) {
 	return std::max(static_cast<int>(x), static_cast<int>(y));
 }
 
-void Monitoring::fillInLimitsStatus(const planning_scene::PlanningScene& scene, diagnostic_msgs::DiagnosticStatus& status)
+template <typename Inserter>
+void Monitoring::fillInLimitsStatus(const planning_scene::PlanningScene& scene, Inserter msgs)
 {
-	status.level = status.OK;
+	const std::string prefix{ "move_group.JointLimits" };
+  const std::string log_name{ "monitoring.JointLimits" };
 
-	const auto& state{ scene.getCurrentState() };
-
-	status.values.clear();
-	status.values.reserve(state.getRobotModel()->getJointModels().size());
-
-	auto makeKV = [](std::string key, std::string value){
+	auto makeKV = [](std::string key, const auto& value){
 		diagnostic_msgs::KeyValue kv;
 		kv.key = key;
-		kv.value = value;
+		kv.value = std::to_string(value);
 		return kv;
 	};
 
-	std::vector<diagnostic_msgs::KeyValue> out_of_bounds;
-	std::vector<diagnostic_msgs::KeyValue> close_to_limits;
+	const auto& state{ scene.getCurrentState() };
 
 	for(const auto& joint : state.getRobotModel()->getJointModels()) {
 		const double* positions{ state.getJointPositions(joint) };
@@ -173,59 +169,50 @@ void Monitoring::fillInLimitsStatus(const planning_scene::PlanningScene& scene, 
 		for(size_t i = 0; i < joint->getVariableCount(); ++i){
 			if(!bounds[i].position_bounded_)
 				continue;
+
+			diagnostic_msgs::DiagnosticStatus entry;
+			entry.name = prefix + joint->getVariableNames()[i];
+
 			if(positions[i] < bounds[i].min_position_ - joint_limit_soft_margin){
-				status.level = status.ERROR;
+				entry.level = entry.ERROR;
 				std::stringstream report;
-				report << positions[i] << " below lower limit " << bounds[i].min_position_;
-				out_of_bounds.push_back(makeKV(joint->getVariableNames()[i], report.str()));
+				report << positions[i] << " outside lower limit " << bounds[i].min_position_;
+				entry.message = report.str();
+				entry.values.push_back(makeKV("lower_limit", bounds[i].min_position_));
+				entry.values.push_back(makeKV("position", positions[i]));
+				ROS_ERROR_STREAM_COND_NAMED(log_msgs, log_name, entry.name + ": " + entry.message);
 			}
 			else if(positions[i] > bounds[i].max_position_ + joint_limit_soft_margin){
-				status.level = status.ERROR;
+				entry.level = entry.ERROR;
 				std::stringstream report;
-				report << positions[i] << " above upper limit " << bounds[i].max_position_;
-				out_of_bounds.push_back(makeKV(joint->getVariableNames()[i], report.str()));
+				report << positions[i] << " outside upper limit " << bounds[i].min_position_;
+				entry.message = report.str();
+				entry.values.push_back(makeKV("upper_limit", bounds[i].max_position_));
+				entry.values.push_back(makeKV("position", positions[i]));
+				ROS_ERROR_STREAM_COND_NAMED(log_msgs, log_name, entry.name + ": " + entry.message);
 			}
 			else if(positions[i] < bounds[i].min_position_ + joint_close_to_limit_fraction*joint->getMaximumExtent()){
-				status.level = max(status.level, status.WARN);
+				entry.level = entry.WARN;
 				std::stringstream report;
 				report << positions[i] << " close to lower limit " << bounds[i].min_position_;
-				close_to_limits.push_back(makeKV(joint->getVariableNames()[i], report.str()));
+				entry.message = report.str();
+				entry.values.push_back(makeKV("lower_limit", bounds[i].max_position_));
+				entry.values.push_back(makeKV("position", positions[i]));
+				ROS_WARN_STREAM_COND_NAMED(log_msgs, log_name, entry.name + ": " + entry.message);
 			}
 			else if(positions[i] > bounds[i].max_position_ - joint_close_to_limit_fraction*joint->getMaximumExtent()){
-				status.level = max(status.level, status.WARN);
+				entry.level = entry.WARN;
 				std::stringstream report;
-				report << positions[i] << " close to upper limit " << bounds[i].max_position_;
-				close_to_limits.push_back(makeKV(joint->getVariableNames()[i], report.str()));
+				report << positions[i] << " close to upper limit " << bounds[i].min_position_;
+				entry.message = report.str();
+				entry.values.push_back(makeKV("upper_limit", bounds[i].max_position_));
+				entry.values.push_back(makeKV("position", positions[i]));
+				ROS_WARN_STREAM_COND_NAMED(log_msgs, log_name, entry.name + ": " + entry.message);
 			}
+			else {
+				entry.level = entry.OK;
+			}
+			msgs = entry;
 		}
-	}
-
-	// always list out of bounds errors first
-	status.values.insert(status.values.end(), out_of_bounds.begin(), out_of_bounds.end());
-	status.values.insert(status.values.end(), close_to_limits.begin(), close_to_limits.end());
-
-	switch(status.level){
-	case diagnostic_msgs::DiagnosticStatus::OK:
-		status.message = "joints within limits";
-		break;
-	case diagnostic_msgs::DiagnosticStatus::WARN:
-		status.message = "joints close to limit";
-		break;
-	case diagnostic_msgs::DiagnosticStatus::ERROR:
-		status.message = "joints outside configured limits";
-		break;
-	default:
-		break;
-	}
-
-	if(status.level != status.OK && log_msgs){
-		std::stringstream ss;
-		ss << status.message << "\n";
-		for(const auto& entry : status.values)
-			ss << "- " << entry.key << " " << entry.value << "\n";
-		if(status.level == status.WARN)
-			ROS_WARN_STREAM_NAMED(status.name, ss.str());
-		else
-			ROS_ERROR_STREAM_NAMED(status.name, ss.str());
 	}
 }

@@ -191,14 +191,14 @@ void Monitoring::fillInLimitsStatus(const planning_scene::PlanningScene& scene, 
 				std::stringstream report;
 				report << positions[i] << " close to lower limit " << bounds[i].min_position_;
 				entry.message = report.str();
-				entry.values.push_back(makeKV("lower_limit", bounds[i].max_position_));
+				entry.values.push_back(makeKV("lower_limit", bounds[i].min_position_));
 				entry.values.push_back(makeKV("position", positions[i]));
 				ROS_WARN_STREAM_COND_NAMED(log_msgs, log_name, entry.name + ": " + entry.message);
 			}
 			else if(positions[i] > bounds[i].max_position_ - joint_close_to_limit_fraction*joint->getMaximumExtent()){
 				entry.level = entry.WARN;
 				std::stringstream report;
-				report << positions[i] << " close to upper limit " << bounds[i].min_position_;
+				report << positions[i] << " close to upper limit " << bounds[i].max_position_;
 				entry.message = report.str();
 				entry.values.push_back(makeKV("upper_limit", bounds[i].max_position_));
 				entry.values.push_back(makeKV("position", positions[i]));

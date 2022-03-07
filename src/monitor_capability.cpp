@@ -129,7 +129,7 @@ void Monitoring::fillInSceneStatus(const planning_scene::PlanningScene& scene, d
 		for(const auto& pair : res.contacts){
 			status.values.emplace_back();
 			status.values.back().key = "contact " + std::to_string(id++);
-			status.values.back().value = pair.first.first + " - " + pair.first.second;
+			status.values.back().value = pair.first.first + " <> " + pair.first.second;
 		}
 		if(log_msgs)
 			ROS_ERROR_STREAM_NAMED(getName(), status.message);

@@ -60,6 +60,8 @@ public:
 		diagnostics = root_node_handle_.advertise<diagnostic_msgs::DiagnosticArray>("diagnostics", 1, true);
 		log_msgs = node_handle_.param("monitoring/log_msgs", false);
 		rate = node_handle_.param("monitoring/rate", 0.5);
+		joint_limit_soft_margin = node_handle_.param("monitoring/joint_limit_soft_margin", 0.05);
+		joint_close_to_limit_fraction = node_handle_.param("monitoring/joint_close_to_limit_fraction", 0.05);
 	};
 
 	void monitoringThread();
@@ -73,6 +75,8 @@ private:
 	ros::Publisher diagnostics;
 	bool log_msgs;
 	double rate;
+	double joint_limit_soft_margin;
+	double joint_close_to_limit_fraction;
 };
 PLUGINLIB_EXPORT_CLASS(Monitoring, move_group::MoveGroupCapability);
 
@@ -131,8 +135,90 @@ void Monitoring::fillInSceneStatus(const planning_scene::PlanningScene& scene, d
 	}
 }
 
-void Monitoring::fillInLimitsStatus(const planning_scene::PlanningScene&, diagnostic_msgs::DiagnosticStatus& status)
+template <typename T, typename Q>
+inline T max(T x, Q y) {
+	return std::max(static_cast<int>(x), static_cast<int>(y));
+}
+
+void Monitoring::fillInLimitsStatus(const planning_scene::PlanningScene& scene, diagnostic_msgs::DiagnosticStatus& status)
 {
 	status.level = status.OK;
-	status.message = "not implemented";
+
+	const auto& state{ scene.getCurrentState() };
+
+	status.values.clear();
+	status.values.reserve(state.getRobotModel()->getJointModels().size());
+
+	auto makeKV = [](std::string key, std::string value){
+		diagnostic_msgs::KeyValue kv;
+		kv.key = key;
+		kv.value = value;
+		return kv;
+	};
+
+	std::vector<diagnostic_msgs::KeyValue> out_of_bounds;
+	std::vector<diagnostic_msgs::KeyValue> close_to_limits;
+
+	for(const auto& joint : state.getRobotModel()->getJointModels()) {
+		const double* positions{ state.getJointPositions(joint) };
+		const std::vector<moveit::core::VariableBounds>& bounds{ joint->getVariableBounds() };
+
+		for(size_t i = 0; i < joint->getVariableCount(); ++i){
+			if(!bounds[i].position_bounded_)
+				continue;
+			if(positions[i] < bounds[i].min_position_ - joint_limit_soft_margin){
+				status.level = status.ERROR;
+				std::stringstream report;
+				report << positions[i] << " below lower limit " << bounds[i].min_position_;
+				out_of_bounds.push_back(makeKV(joint->getVariableNames()[i], report.str()));
+			}
+			else if(positions[i] > bounds[i].max_position_ + joint_limit_soft_margin){
+				status.level = status.ERROR;
+				std::stringstream report;
+				report << positions[i] << " above upper limit " << bounds[i].max_position_;
+				out_of_bounds.push_back(makeKV(joint->getVariableNames()[i], report.str()));
+			}
+			else if(positions[i] < bounds[i].min_position_ + joint_close_to_limit_fraction*joint->getMaximumExtent()){
+				status.level = max(status.level, status.WARN);
+				std::stringstream report;
+				report << positions[i] << " close to lower limit " << bounds[i].min_position_;
+				close_to_limits.push_back(makeKV(joint->getVariableNames()[i], report.str()));
+			}
+			else if(positions[i] > bounds[i].max_position_ - joint_close_to_limit_fraction*joint->getMaximumExtent()){
+				status.level = max(status.level, status.WARN);
+				std::stringstream report;
+				report << positions[i] << " close to upper limit " << bounds[i].max_position_;
+				close_to_limits.push_back(makeKV(joint->getVariableNames()[i], report.str()));
+			}
+		}
+	}
+
+	// always list out of bounds errors first
+	status.values.insert(status.values.end(), out_of_bounds.begin(), out_of_bounds.end());
+	status.values.insert(status.values.end(), close_to_limits.begin(), close_to_limits.end());
+
+	switch(status.level){
+	case diagnostic_msgs::DiagnosticStatus::OK:
+		status.message = "joints within limits";
+		break;
+	case diagnostic_msgs::DiagnosticStatus::WARN:
+		status.message = "joints close to limit";
+		break;
+	case diagnostic_msgs::DiagnosticStatus::ERROR:
+		status.message = "joints outside configured limits";
+		break;
+	default:
+		break;
+	}
+
+	if(status.level != status.OK && log_msgs){
+		std::stringstream ss;
+		ss << status.message << "\n";
+		for(const auto& entry : status.values)
+			ss << "- " << entry.key << " " << entry.value << "\n";
+		if(status.level == status.WARN)
+			ROS_WARN_STREAM_NAMED(status.name, ss.str());
+		else
+			ROS_ERROR_STREAM_NAMED(status.name, ss.str());
+	}
 }

@@ -83,23 +83,29 @@ PLUGINLIB_EXPORT_CLASS(Monitoring, move_group::MoveGroupCapability);
 void Monitoring::monitoringThread()
 {
 	diagnostic_msgs::DiagnosticArray da;
-	da.header.stamp = ros::Time::now();
 	da.status.resize(2);
 	auto& scene_status{ da.status[0] };
 	scene_status.name = "MoveGroupMonitoring.PlanningSceneCheck";
 	auto& limits_status{ da.status[1] };
 	limits_status.name = "MoveGroupMonitoring.LimitsCheck";
-	auto sendDiagnostics = [&] { diagnostics.publish(da); };
+	auto sendDiagnostics = [&](const ros::Time& time) {
+		da.header.stamp = time;
+		diagnostics.publish(da);
+	};
+
+	ros::Time now;
 
 	ros::Rate r(rate);
 	while(ros::ok()){
 		r.sleep();
-		planning_scene_monitor::LockedPlanningSceneRO locked_scene{ context_->planning_scene_monitor_ };
-
-		const auto& scene { *locked_scene->shared_from_this() };
-		fillInSceneStatus(scene, scene_status);
-		fillInLimitsStatus(scene, limits_status);
-		sendDiagnostics();
+		{
+			planning_scene_monitor::LockedPlanningSceneRO locked_scene{ context_->planning_scene_monitor_ };
+			now = ros::Time::now();
+			const auto& scene { *locked_scene->shared_from_this() };
+			fillInSceneStatus(scene, scene_status);
+			fillInLimitsStatus(scene, limits_status);
+		}
+		sendDiagnostics(now);
 	}
 }
 

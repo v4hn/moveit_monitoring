@@ -142,15 +142,10 @@ void Monitoring::fillInSceneStatus(const planning_scene::PlanningScene& scene, I
 	}
 }
 
-template <typename T, typename Q>
-inline T max(T x, Q y) {
-	return std::max(static_cast<int>(x), static_cast<int>(y));
-}
-
 template <typename Inserter>
 void Monitoring::fillInLimitsStatus(const planning_scene::PlanningScene& scene, Inserter msgs)
 {
-	const std::string prefix{ "move_group.JointLimits" };
+	const std::string prefix{ "move_group.JointLimits." };
   const std::string log_name{ "monitoring.JointLimits" };
 
 	auto makeKV = [](std::string key, const auto& value){

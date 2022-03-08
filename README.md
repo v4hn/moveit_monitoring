@@ -1,5 +1,8 @@
 # moveit_monitoring
 
+This package provides basic MoveIt state information to the ROS diagnostics subsystem,
+as monitored by the diagnostics_aggregator, various robot dashboards and rqt_robot_monitor.
+
 ![RQT monitor showing 5 contacts reported as error in the diagnostics subsystem](doc/rqt_monitor.png)
 
 # install for use
@@ -17,3 +20,5 @@ or add it to the list of capabilities to load directly in the `move_group.launch
                 moveit_monitoring/Monitoring
                 " />
 ```
+
+a demo configuration and launch file are provided with this package.

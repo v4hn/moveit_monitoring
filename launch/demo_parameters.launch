@@ -1,0 +1,4 @@
+<?xml version="1.0"?>
+<launch>
+  <rosparam command="load" ns="move_group/monitoring" file="$(dirname)/../config/monitoring.yaml" />
+</launch>

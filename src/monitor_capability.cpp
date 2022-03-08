@@ -56,8 +56,10 @@ public:
 	}
 
 	void initialize() override {
-		log_msgs = node_handle_.param("monitoring/log_msgs", false);
-		rate = node_handle_.param("monitoring/rate", 0.5);
+		param_handle = ros::NodeHandle(node_handle_, "monitoring");
+		log_msgs = param_handle.param("log_msgs", false);
+		rate = param_handle.param("rate", 0.5);
+		debug = param_handle.param("debug", false);
 
 		setupMonitoringLimits();
 
@@ -77,9 +79,12 @@ private:
 
 	std::thread t;
 
+	ros::NodeHandle param_handle;
 	ros::Publisher diagnostics;
+
 	bool log_msgs;
 	double rate;
+	bool debug;
 
 	struct MonitoringLimits {
 		double lower_report_error;
@@ -153,21 +158,33 @@ void Monitoring::fillInSceneStatus(const planning_scene::PlanningScene& scene, I
 
 void Monitoring::setupMonitoringLimits()
 {
-	double joint_limit_soft_margin = node_handle_.param("monitoring/joint_limit_soft_margin", 0.05);
-	double joint_close_to_limit_fraction = node_handle_.param("monitoring/joint_close_to_limit_fraction", 0.05);
+	double joint_limit_soft_margin = param_handle.param("limit_tolerance", 0.05);
+	double joint_close_to_limit_fraction = param_handle.param("warn_close_to_limit_fraction", 0.05);
 
 	const moveit::core::RobotModel& robot_model { *context_->planning_scene_monitor_->getRobotModel() };
 
+	ros::NodeHandle joints_param_handle{ param_handle, "joints" };
 	monitoring_limits.reserve(robot_model.getVariableCount());
 	for(const auto& joint : robot_model.getJointModels()){
 		for(size_t v= 0; v <  joint->getVariableCount(); ++v){
+			const std::string& variable_name{ joint->getVariableNames()[v] };
 			monitoring_limits.emplace_back();
 			auto& limits { monitoring_limits.back() };
+
+			double limit_margin{ joints_param_handle.param(variable_name+"/limit_tolerance", joint_limit_soft_margin) };
+
+			double warn_limit_margin{
+				joints_param_handle.param(variable_name+"/warn_limit_margin",
+				                   joint->getVariableCount() == 1
+				                          ? joint_close_to_limit_fraction * joint->getMaximumExtent()
+				                          : 0.0)
+			};
+
 			limits.bounds = joint->getVariableBounds()[v];
-			limits.lower_report_error = limits.bounds.min_position_ - joint_limit_soft_margin;
-			limits.upper_report_error = limits.bounds.max_position_ + joint_limit_soft_margin;
-			limits.lower_report_warn = limits.bounds.min_position_ + joint_close_to_limit_fraction * joint->getMaximumExtent();
-			limits.upper_report_warn = limits.bounds.max_position_ - joint_close_to_limit_fraction * joint->getMaximumExtent();
+			limits.lower_report_error = limits.bounds.min_position_ - limit_margin;
+			limits.upper_report_error = limits.bounds.max_position_ + limit_margin;
+			limits.lower_report_warn = limits.bounds.min_position_ + warn_limit_margin;
+			limits.upper_report_warn = limits.bounds.max_position_ - warn_limit_margin;
 		}
 	}
 }
@@ -176,7 +193,7 @@ template <typename Inserter>
 void Monitoring::fillInLimitsStatus(const planning_scene::PlanningScene& scene, Inserter msgs)
 {
 	const std::string prefix{ "move_group.JointLimits." };
-  const std::string log_name{ "monitoring.JointLimits" };
+	const std::string log_name{ "monitoring.JointLimits" };
 
 	auto makeKV = [](std::string key, const auto& value){
 		diagnostic_msgs::KeyValue kv;
@@ -206,7 +223,18 @@ void Monitoring::fillInLimitsStatus(const planning_scene::PlanningScene& scene, 
 				std::stringstream report;
 				report << positions[i] << " outside lower limit " << bounds.min_position_;
 				entry.message = report.str();
+				entry.values.push_back(makeKV("lower_error", limits.lower_report_error));
 				entry.values.push_back(makeKV("lower_limit", bounds.min_position_));
+				entry.values.push_back(makeKV("position", positions[i]));
+				ROS_ERROR_STREAM_COND_NAMED(log_msgs, log_name, entry.name + ": " + entry.message);
+			}
+			else if(positions[i] >= limits.upper_report_error){
+				entry.level = entry.ERROR;
+				std::stringstream report;
+				report << positions[i] << " outside upper limit " << bounds.min_position_;
+				entry.message = report.str();
+				entry.values.push_back(makeKV("upper_limit", bounds.max_position_));
+				entry.values.push_back(makeKV("upper_error", limits.upper_report_error));
 				entry.values.push_back(makeKV("position", positions[i]));
 				ROS_ERROR_STREAM_COND_NAMED(log_msgs, log_name, entry.name + ": " + entry.message);
 			}
@@ -216,29 +244,32 @@ void Monitoring::fillInLimitsStatus(const planning_scene::PlanningScene& scene, 
 				report << positions[i] << " close to lower limit " << bounds.min_position_;
 				entry.message = report.str();
 				entry.values.push_back(makeKV("lower_limit", bounds.min_position_));
+				entry.values.push_back(makeKV("lower_warn", limits.lower_report_warn));
 				entry.values.push_back(makeKV("position", positions[i]));
 				ROS_WARN_STREAM_COND_NAMED(log_msgs, log_name, entry.name + ": " + entry.message);
 			}
-			else if(positions[i] < limits.upper_report_warn) {
-				entry.level = entry.OK;
-			}
-			else if(positions[i] < limits.upper_report_error){
+			else if(positions[i] >= limits.upper_report_warn){
 				entry.level = entry.WARN;
 				std::stringstream report;
 				report << positions[i] << " close to upper limit " << bounds.max_position_;
 				entry.message = report.str();
+				entry.values.push_back(makeKV("upper_warn", limits.upper_report_warn));
 				entry.values.push_back(makeKV("upper_limit", bounds.max_position_));
 				entry.values.push_back(makeKV("position", positions[i]));
 				ROS_WARN_STREAM_COND_NAMED(log_msgs, log_name, entry.name + ": " + entry.message);
 			}
-			else { // positions[i] > limits.upper_report_error
-				entry.level = entry.ERROR;
-				std::stringstream report;
-				report << positions[i] << " outside upper limit " << bounds.min_position_;
-				entry.message = report.str();
-				entry.values.push_back(makeKV("upper_limit", bounds.max_position_));
+			else {
+				entry.level = entry.OK;
+			}
+
+			if(debug){
 				entry.values.push_back(makeKV("position", positions[i]));
-				ROS_ERROR_STREAM_COND_NAMED(log_msgs, log_name, entry.name + ": " + entry.message);
+				entry.values.push_back(makeKV("lower_error", limits.lower_report_error));
+				entry.values.push_back(makeKV("lower_limit", bounds.min_position_));
+				entry.values.push_back(makeKV("lower_warn", limits.lower_report_warn));
+				entry.values.push_back(makeKV("upper_warn", limits.upper_report_warn));
+				entry.values.push_back(makeKV("upper_limit", bounds.max_position_));
+				entry.values.push_back(makeKV("upper_error", limits.upper_report_error));
 			}
 
 			msgs = entry;

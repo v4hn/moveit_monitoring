@@ -218,8 +218,16 @@ void Monitoring::fillInLimitsStatus(const planning_scene::PlanningScene& scene, 
 			diagnostic_msgs::DiagnosticStatus entry;
 			entry.name = prefix + joint->getVariableNames()[i];
 
-			if(positions[i] <= limits.lower_report_error){
-				entry.level = entry.ERROR;
+			if(positions[i] <= limits.bounds.min_position_){
+				if(positions[i] <= limits.lower_report_error){
+					entry.level = entry.ERROR;
+				}
+				else if(positions[i] <= limits.lower_report_warn){
+					entry.level = entry.WARN;
+				}
+				else{
+					entry.level = entry.OK;
+				}
 				std::stringstream report;
 				report << positions[i] << " outside lower limit " << bounds.min_position_;
 				entry.message = report.str();
@@ -228,10 +236,18 @@ void Monitoring::fillInLimitsStatus(const planning_scene::PlanningScene& scene, 
 				entry.values.push_back(makeKV("position", positions[i]));
 				ROS_ERROR_STREAM_COND_NAMED(log_msgs, log_name, entry.name + ": " + entry.message);
 			}
-			else if(positions[i] >= limits.upper_report_error){
-				entry.level = entry.ERROR;
+			else if(positions[i] >= limits.bounds.max_position_){
+				if(positions[i] >= limits.upper_report_error){
+					entry.level = entry.ERROR;
+				}
+				else if(positions[i] >= limits.upper_report_warn){
+					entry.level = entry.WARN;
+				}
+				else{
+					entry.level = entry.OK;
+				}
 				std::stringstream report;
-				report << positions[i] << " outside upper limit " << bounds.min_position_;
+				report << positions[i] << " outside upper limit " << bounds.max_position_;
 				entry.message = report.str();
 				entry.values.push_back(makeKV("upper_limit", bounds.max_position_));
 				entry.values.push_back(makeKV("upper_error", limits.upper_report_error));
